@@ -1,7 +1,7 @@
 import parseQuery from "./parseQuery"
 import config from "./config"
 import graphql from "./graphql"
-import clone from "./util/clone"
+import cloneJSONObject from "./util/cloneJSONObject"
 
 
 /**
@@ -25,6 +25,7 @@ export default class GraphQLQuery {
         this.query = query
         this.queryDef = null
         this.defaultVars = vars
+        this.vars = vars
     }
 
 
@@ -35,6 +36,9 @@ export default class GraphQLQuery {
      */
     getQueryDefinition()
     {
+        if (!this.query) {
+            return null;
+        }
         if (!this.queryDef)
         {
             this.queryDef = parseQuery(config.inputSchema, this.query)
@@ -54,6 +58,8 @@ export default class GraphQLQuery {
     {
         //console.log("GraphQLQuery.execute", this, JSON.stringify(variables, null, 4));
 
+        this.vars = variables;
+
         return graphql(
             {
                 query: this,
@@ -70,7 +76,7 @@ export default class GraphQLQuery {
      */
     clone()
     {
-        const c = new GraphQLQuery(this.query, clone(this.defaultVars))
+        const c = new GraphQLQuery(this.query, cloneJSONObject(this.defaultVars))
         c.queryDef = this.queryDef
         return c
     }

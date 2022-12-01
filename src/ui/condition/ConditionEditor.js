@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import cx from "classnames"
 import { observer, useLocalObservable } from "mobx-react-lite";
 import get from "lodash.get";
+import set from "lodash.set";
 
 import { field, toJSON, Type, value as dslValue } from "../../FilterDSL";
 import { AABB, isStructuralCondition, join } from "./condition-layout";
@@ -18,6 +19,7 @@ import PropTypes from "prop-types";
 import { runInAction } from "mobx";
 import ExpressionDialog from "./ExpressionDialog";
 import ExpressionDropdown from "./ExpressionDropdown";
+import { getFieldDataByPath, getTableNameByPath } from "../../util/inputSchemaUtilities";
 
 
 function minXOfChildren(layoutNode)
@@ -82,8 +84,46 @@ const DEFAULT_OPTIONS = {
     extraSVG: () => false
 }
 
-const ConditionEditor = observer(function ConditionEditor({rootType, container, path : containerPath = "", className, options, formContext = FormContext.getDefault()})
-{
+const ConditionEditor = observer(function ConditionEditor(props) {
+    const {
+        rootType,
+        container,
+        path : containerPath = "",
+        className,
+        options,
+        formContext = FormContext.getDefault(),
+        valueRenderer: valueRendererFromProps,
+        schemaResolveFilterCallback,
+        onChange,
+        hideImportExport: enableImportExport,
+        queryCondition: queryConditionFromProps
+    } = props;
+
+    const valueRenderer = useMemo(() => {
+        if (typeof valueRendererFromProps === "function") {
+            return (pathName, nodeData = {}) => {
+                const tablePathName = pathName.split(".").slice(0, -1).join(".");
+                return valueRendererFromProps(pathName, {
+                    ...nodeData,
+                    rootType,
+                    tableName: getTableNameByPath(rootType, tablePathName),
+                    fieldData: getFieldDataByPath(rootType, pathName)
+                });
+            }
+        }
+    }, [valueRendererFromProps]);
+
+    const onConditionChange = useMemo(() => {
+        if (typeof onChange === "function") {
+            return () => {
+                const queryCondition = get(container, containerPath);
+                onChange(queryCondition);
+            };
+        } else {
+            return () => {}
+        }
+    });
+
     const opts = useMemo(
         () => {
 
@@ -92,7 +132,6 @@ const ConditionEditor = observer(function ConditionEditor({rootType, container, 
                 ... options,
                 rootType
             };
-            //console.log("PREPARE OPTS MEMO", opts)
             return opts
         },
         [
@@ -107,20 +146,22 @@ const ConditionEditor = observer(function ConditionEditor({rootType, container, 
 
     const editorState = useLocalObservable(
         () => new ConditionEditorState(rootType, container, containerPath, opts)
-    )
+    );
+
+    useEffect(() => {
+        editorState.replaceCondition(queryConditionFromProps);
+    }, [queryConditionFromProps]);
 
     useLayoutEffect(
         () => {
             if (editorState.revalidateCount)
             {
-                //console.log("trigger revalidation")
-
                 formContext.removeAllErrors();
                 formContext.revalidate();
             }
         },
         [ editorState.revalidateCount ]
-    )
+    );
 
     const { layoutRoot, layoutCounter, aabb } = editorState.conditionTree;
 
@@ -144,12 +185,10 @@ const ConditionEditor = observer(function ConditionEditor({rootType, container, 
             }
         },
         []
-    )
+    );
 
     useEffect(
         () => {
-
-            //console.log("LAYOUT TREE, root #", FormContext.getUniqueId(layoutRoot))
 
             editorState.conditionTree.updateDimensions(containerRef.current);
 
@@ -184,16 +223,17 @@ const ConditionEditor = observer(function ConditionEditor({rootType, container, 
                 aabb.add(0, 0);
             }
 
-            //console.log("AABB", aabb)
             editorState.conditionTree.updateAABB(aabb)
+
+            onConditionChange();
         },
         [ layoutCounter ]
-    )
+    );
 
     const nodes = [];
     const decorations = [];
 
-    renderLayoutNodes(layoutRoot, nodes, decorations, editorState, condition, editorState.conditionTree)
+    renderLayoutNodes(rootType, layoutRoot, nodes, decorations, editorState, condition, editorState.conditionTree, valueRenderer, schemaResolveFilterCallback);
 
     return (
         <>
@@ -206,7 +246,8 @@ const ConditionEditor = observer(function ConditionEditor({rootType, container, 
                     value={ condition }
                     formContext={ formContext }
                     options={ {
-                        layout: FormLayout.INLINE
+                        layout: FormLayout.INLINE,
+                        onChange: onConditionChange
                     } }
                 >
                     {
@@ -252,18 +293,23 @@ const ConditionEditor = observer(function ConditionEditor({rootType, container, 
                         }
                     }
                 </Form>
-                <ButtonToolbar className="flex-row-reverse">
-                    <button
-                        type="button"
-                        className="btn btn-link btn-sm"
-                        onClick={ () => editorState.toggleImportExportOpen() }
-                    >
-                        {
-                            i18n("ConditionEditor:Import/Export")
-                        }
-                    </button>
-
-                </ButtonToolbar>
+                
+                {
+                    enableImportExport && (
+                        <ButtonToolbar className="flex-row-reverse">
+                            <button
+                                type="button"
+                                className="btn btn-link btn-sm"
+                                onClick={ () => editorState.toggleImportExportOpen() }
+                            >
+                                {
+                                    i18n("ConditionEditor:Import/Export")
+                                }
+                            </button>
+                        </ButtonToolbar>
+                    )
+                }
+                
 
             </div>
 
@@ -279,20 +325,6 @@ const ConditionEditor = observer(function ConditionEditor({rootType, container, 
         </>
     );
 });
-
-/*
-            <Card className="mt-3">
-                <CardHeader>JSON</CardHeader>
-                <CardBody>
-                    <pre>
-                        {
-                            JSON.stringify(condition, null, 4)
-                        }
-                    </pre>
-                </CardBody>
-            </Card>
-
- */
 
 ///   NODE RENDERING ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -323,7 +355,7 @@ function StructuralAddButton({condition, path, editorState})
  * Creates flat React elements for the hierarchical component tree and adds them either to "nodes" which are normal
  * relative-absolute positioned HTML content and decorations which are SVG elements
  */
-export function renderLayoutNodes(layoutNode, nodes, decorations, editorState, conditionRoot, tree)
+export function renderLayoutNodes(rootType, layoutNode, nodes, decorations, editorState, conditionRoot, tree, valueRenderer, schemaResolveFilterCallback)
 {
     if (!layoutNode)
     {
@@ -395,11 +427,11 @@ export function renderLayoutNodes(layoutNode, nodes, decorations, editorState, c
 
         if (isConditionTree)
         {
-            renderCondition(elements, layoutNode, layoutNode.data,  path, tree, conditionRoot)
+            renderCondition(rootType, elements, layoutNode, layoutNode.data, path, editorState, tree, conditionRoot, valueRenderer, schemaResolveFilterCallback)
         }
         else
         {
-            renderExpression(elements, layoutNode, layoutNode.data,  path, tree, conditionRoot)
+            renderExpression(rootType, elements, layoutNode, layoutNode.data, path, editorState, tree, conditionRoot, valueRenderer, schemaResolveFilterCallback)
         }
 
         nodes.push(
@@ -416,16 +448,14 @@ export function renderLayoutNodes(layoutNode, nodes, decorations, editorState, c
         )
     }
 
-    //console.log("offsetX", offsetX, "offsetY", offsetY)
-
     if (isStructural)
     {
-        flattenStructuralKids(layoutNode, nodes, decorations, editorState, conditionRoot, tree);
+        flattenStructuralKids(rootType, layoutNode, nodes, decorations, editorState, conditionRoot, tree, valueRenderer, schemaResolveFilterCallback);
     }
 }
 
 
-function flattenStructuralKids(node, nodes, decorations, editorState, conditionRoot, tree)
+function flattenStructuralKids(rootType, node, nodes, decorations, editorState, conditionRoot, tree, valueRenderer, schemaResolveFilterCallback)
 {
     const { children } = node;
 
@@ -434,13 +464,12 @@ function flattenStructuralKids(node, nodes, decorations, editorState, conditionR
         for (let i = 0; i < children.length; i++)
         {
             const kid = children[i];
-            renderLayoutNodes(kid, nodes, decorations, editorState, conditionRoot, tree)
+            renderLayoutNodes(rootType, kid, nodes, decorations, editorState, conditionRoot, tree, valueRenderer, schemaResolveFilterCallback)
         }
     }
 }
 
-function renderCondition(elements, layoutNode, condition, path, tree, conditionRoot)
-{
+function renderCondition(rootType, elements, layoutNode, condition, path, editorState, tree, conditionRoot, valueRenderer, schemaResolveFilterCallback) {
     const {type} = condition;
 
     const nodeId = ConditionEditorState.getNodeId(condition);
@@ -453,7 +482,7 @@ function renderCondition(elements, layoutNode, condition, path, tree, conditionR
         const unary = operands.length === 1;
         if (!unary)
         {
-            renderCondition(kids, layoutNode, operands[0], join(path, "operands.0"), tree, conditionRoot)
+            renderCondition(rootType, kids, layoutNode, operands[0], join(path, "operands.0"), editorState, tree, conditionRoot, valueRenderer, schemaResolveFilterCallback)
         }
 
         kids.push(
@@ -464,7 +493,7 @@ function renderCondition(elements, layoutNode, condition, path, tree, conditionR
                 <ConditionSelect
                     condition={ condition }
                     path={ path }
-                    editorState={ tree.editorState }
+                    editorState={ editorState }
                     isCondition={ condition.type === Type.CONDITION }
                 />
             </span>
@@ -472,7 +501,7 @@ function renderCondition(elements, layoutNode, condition, path, tree, conditionR
 
         for (let i = unary ? 0 : 1; i < operands.length; i++)
         {
-            renderCondition(kids, layoutNode, operands[i], join(path, "operands." + i), tree, conditionRoot)
+            renderCondition(rootType, kids, layoutNode, operands[i], join(path, "operands." + i), editorState, tree, conditionRoot, valueRenderer, schemaResolveFilterCallback)
         }
 
         if (isCondition)
@@ -483,7 +512,7 @@ function renderCondition(elements, layoutNode, condition, path, tree, conditionR
                     path={ path }
                     conditionRoot={ conditionRoot }
                     condition={ condition }
-                    editorState={ tree.editorState }
+                    editorState={ editorState }
                 />
             )
         }
@@ -507,9 +536,12 @@ function renderCondition(elements, layoutNode, condition, path, tree, conditionR
             <FieldSelect
                 key={ nodeId }
                 layoutId={ nodeId }
-                conditionRoot={ conditionRoot }
+                rootType={ rootType }
+                conditionRoot={conditionRoot}
                 path={ path }
-                editorState={ tree.editorState }
+                editorState={ editorState }
+                valueRenderer={ valueRenderer }
+                schemaResolveFilterCallback={schemaResolveFilterCallback}
             />
         )
     }
@@ -528,7 +560,7 @@ function renderCondition(elements, layoutNode, condition, path, tree, conditionR
                     name={ join(path, "value") }
                     type={ scalarType + "!" }
                     labelClass="sr-only"
-                    label="Filter value"
+                    label={i18n("ConditionEditor:Filter value")}
                     required={ true }
                 />
             </span>
@@ -570,7 +602,7 @@ function renderCondition(elements, layoutNode, condition, path, tree, conditionR
                                         <button
                                             type="button"
                                             className="btn btn-light border"
-                                            aria-label="Remove"
+                                            aria-label={i18n("ConditionEditor:Remove")}
                                             onClick={ () => editorState.removeInValue(path, idx)}
                                             >
                                             <Icon className="fa-minus text-danger"/>
@@ -586,10 +618,13 @@ function renderCondition(elements, layoutNode, condition, path, tree, conditionR
                     <button
                         type="button"
                         className="btn btn-light border"
-                        aria-label="Remove"
+                        aria-label={i18n("ConditionEditor:Add")}
                         onClick={ () => runInAction(() => editorState.addInValue(path) ) }
                     >
-                        <Icon className="fa-plus mr-1"/>Add
+                        <Icon className="fa-plus mr-1"/>
+                        {
+                            i18n("ConditionEditor:Add")
+                        }
                     </button>
                 </span>
             </div>
@@ -602,7 +637,7 @@ function renderCondition(elements, layoutNode, condition, path, tree, conditionR
     }
 }
 
-function renderExpression(elements, layoutNode, condition, path, tree, conditionRoot)
+function renderExpression(rootType, elements, layoutNode, condition, path, editorState, tree, conditionRoot, valueRenderer, schemaResolveFilterCallback)
 {
     const {type} = condition;
 
@@ -614,9 +649,12 @@ function renderExpression(elements, layoutNode, condition, path, tree, condition
             <FieldSelect
                 key={ nodeId }
                 layoutId={ nodeId }
-                conditionRoot={ conditionRoot }
+                rootType={ rootType }
+                conditionRoot={conditionRoot}
                 path={ path }
-                editorState={ tree.editorState }
+                editorState={ editorState }
+                valueRenderer={ valueRenderer }
+                schemaResolveFilterCallback={schemaResolveFilterCallback}
             />
         )
     }
@@ -677,7 +715,7 @@ function renderExpression(elements, layoutNode, condition, path, tree, condition
                                         <button
                                             type="button"
                                             className="btn btn-light border"
-                                            aria-label="Remove"
+                                            aria-label={i18n("ConditionEditor:Remove")}
                                             onClick={ () => editorState.removeInValue(path, idx)}
                                         >
                                             <Icon className="fa-minus text-danger"/>
@@ -693,10 +731,13 @@ function renderExpression(elements, layoutNode, condition, path, tree, condition
                     <button
                         type="button"
                         className="btn btn-light border"
-                        aria-label="Remove"
+                        aria-label={i18n("ConditionEditor:Add")}
                         onClick={ () => runInAction(() => editorState.addInValue(path) ) }
                     >
-                        <Icon className="fa-plus mr-1"/>Add
+                        <Icon className="fa-plus mr-1"/>
+                        {
+                            i18n("ConditionEditor:Add")
+                        }
                     </button>
                 </span>
             </div>
@@ -713,7 +754,7 @@ function renderExpression(elements, layoutNode, condition, path, tree, condition
             key={ nodeId + "-dd" }
             path={ path }
             condition={ condition }
-            editorState={ tree.editorState }
+            editorState={ editorState }
         />
     )
 
@@ -736,12 +777,9 @@ export function drawStructuralDecorator(layoutNode, tree, offsetX, offsetY)
     x = y;
     y = tmp - dimension.height;
 
-    //console.log("DIM", ConditionEditorState.getNodeId(layoutNode.data), dimension)
-
     const { children } = layoutNode;
     if (!children)
     {
-        //console.log("drawStructuralDecorator: no children for ", layoutNode, toJS(layoutNode.data))
         return;
     }
 
@@ -782,6 +820,7 @@ export function drawStructuralDecorator(layoutNode, tree, offsetX, offsetY)
         }
 
         path += "M" + (x2 - offsetX ) + "," + (kidY - offsetY) + "L" + (kidX - offsetX) + "," + (kidY - offsetY);
+                
 
     }
 
@@ -790,7 +829,7 @@ export function drawStructuralDecorator(layoutNode, tree, offsetX, offsetY)
     return (
         <path
             key={ "deco" + ConditionEditorState.getNodeId(layoutNode.data) }
-            d={ path }
+            d={ /infinite|nan/i.test(path) ? "" : path }
             { ... opts.pathProps}
 
         />
@@ -803,7 +842,27 @@ ConditionEditor.propTypes = {
     path : PropTypes.string.isRequired,
     className : PropTypes.string,
     options : PropTypes.object,
-    formContext: PropTypes.instanceOf(FormContext)
+    formContext: PropTypes.instanceOf(FormContext),
+
+    /**
+     * available fields for field selects
+     */
+    fields: PropTypes.arrayOf(PropTypes.object),
+
+    /**
+     * callback function called on changes to the condition
+     */
+    onChange: PropTypes.func,
+
+    /**
+     * the current condition
+     */
+    queryCondition: PropTypes.object,
+
+    /**
+     * enable the import/export link for editing the condition in json format
+     */
+    enableImportExport: PropTypes.bool
 }
 
 export default ConditionEditor;

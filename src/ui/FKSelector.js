@@ -37,11 +37,13 @@ import {
     unwrapNonNull
 } from "../util/type-utils"
 
-import { field, Type, value, condition, component } from "../FilterDSL"
+import {field, Type, value, condition, component, Condition} from "../FilterDSL"
 import { isNonNull } from "domainql-form/lib/InputSchema";
 import { SCALAR } from "domainql-form/lib/kind";
 import CachedQuery from "../model/CachedQuery";
 import updateComponentCondition from "../util/updateComponentCondition"
+import {and} from "../../filter";
+import OfflineQuery from "../model/OfflineQuery";
 
 
 export const NO_SEARCH_FILTER = "NO_SEARCH_FILTER";
@@ -134,6 +136,7 @@ const MODAL_STATE_CLOSED = {
     iQuery: null,
     columns: null,
     columnTypes: null,
+    visibleColumns: null,
     isOpen: false
 };
 
@@ -224,13 +227,40 @@ const FKSelector = fnObserver(props => {
 
     const [ isLoading, setIsLoading ] = useState(false);
 
-    const { display, query : queryFromProps, searchFilter, modalTitle, fade, searchTimeout, modalFilter, cachedPageSize, children, onChange, ... fieldProps } = props;
+    const {
+        display,
+        query: queryFromProps,
+        queryCondition: queryConditionFromProps,
+        catalogueRootType,
+        catalogueFieldQualifiedName,
+        searchFilter,
+        modalTitle,
+        fade,
+        searchTimeout,
+        modalFilter,
+        cachedPageSize,
+        children,
+        onChange,
+        selectButtonContentRenderer,
+        visibleColumns,
+        alignPagination,
+        paginationPageSizes,
+        ... fieldProps
+    } = props;
 
     const haveUserInput = !!searchFilter;
 
+    const queryCondition = typeof queryConditionFromProps === "function" ?
+        queryConditionFromProps() :
+        queryConditionFromProps;
+
     const iQueryDoc = useMemo(
         () => {
-            if (queryFromProps instanceof InteractiveQuery)
+            if (queryFromProps instanceof CachedQuery || queryFromProps instanceof OfflineQuery)
+            {
+                return queryFromProps;
+            }
+            else if (queryFromProps instanceof InteractiveQuery)
             {
                 return new CachedQuery(
                     queryFromProps, {
@@ -260,7 +290,8 @@ const FKSelector = fnObserver(props => {
                     const errorMessages  = formConfig.getErrors(ctx.qualifiedName);
                     const haveErrors = errorMessages.length > 0;
 
-                    const rootType = getOutputTypeName(formConfig.type);
+                    const rootType = catalogueRootType ?? getOutputTypeName(formConfig.type);
+                    const sourcePath = catalogueFieldQualifiedName?.split(".") ?? path;
 
                     const relation = useMemo(
                         () => {
@@ -270,17 +301,17 @@ const FKSelector = fnObserver(props => {
                             let objectType;
                             let fieldName;
 
-                            if (path.length === 1)
+                            if (sourcePath.length === 1)
                             {
                                 // simple case
                                 objectType = rootType;
-                                fieldName = qualifiedName;
+                                fieldName = sourcePath[0];
                             }
                             else
                             {
                                 // path is more than 1 element long, we need to figure out the correct object type and field
-                                objectType = getParentObjectType(rootType, path);
-                                fieldName = path[path.length - 1];
+                                objectType = getParentObjectType(rootType, sourcePath);
+                                fieldName = sourcePath[sourcePath.length - 1];
                             }
 
                             const relations = inputSchema.getRelations().filter(
@@ -319,7 +350,7 @@ const FKSelector = fnObserver(props => {
                         let fieldValue;
                         if (display)
                         {
-                            fieldValue = typeof display === "function" ? display(formConfig) : get(formConfig.root, display);
+                            fieldValue = typeof display === "function" ? display(formConfig, ctx) : get(formConfig.root, display);
                         }
                         else
                         {
@@ -353,6 +384,7 @@ const FKSelector = fnObserver(props => {
                         [ gqlMethodName ]
                     );
 
+                    const fieldValue = Field.getValue(formConfig, ctx, errorMessages);
                     useEffect(
                         () => {
                             if (!haveErrors && !userIsTyping)
@@ -362,11 +394,12 @@ const FKSelector = fnObserver(props => {
                                 if (fieldValue !== inputValue)
                                 {
                                     //console.log("CHANGE TO ", fieldValue);
-                                    formConfig.handleChange(ctx, fieldValue);
+                                    // formConfig.handleChange(ctx, fieldValue);
                                     setInputValue(fieldValue);
                                 }
                             }
                         },
+                        [fieldValue]
                     );
 
                     const debouncedInputValidation = useDebouncedCallback(
@@ -379,6 +412,7 @@ const FKSelector = fnObserver(props => {
                                     const { root, formContext } = formConfig;
 
                                     formContext.updateErrors(root, ctx.qualifiedName, [ val, formConfig.formContext.getRequiredErrorMessage(ctx) ]);
+                                    setUserIsTyping(false);
                                     return;
                                 }
 
@@ -405,9 +439,15 @@ const FKSelector = fnObserver(props => {
                                 fkSelectorId
                             )
 
+                            query.defaultVars.config = {
+                                ... query.defaultVars.config,
+                                offset: 0,
+                                pageSize: query.defaultVars.config?.pageSize ?? 10
+                            };
+
                             query.execute({
                                     config: {
-                                        condition : composite,
+                                        condition : queryCondition ? and(composite, queryCondition) : composite,
                                         offset: 0,
                                         // we only want to know if there's more than one match. We don't care how many
                                         pageSize: 2
@@ -419,7 +459,6 @@ const FKSelector = fnObserver(props => {
                                     //console.log("Received search result: ", toJS(iQuery));
 
                                     //console.log("inputValidation: UPDATE CONFIG", query.defaultVars.config)
-                                    query.defaultVars.config = { ... toJS(iQuery.queryConfig), offset: 0, pageSize: query.defaultVars.config ? query.defaultVars.config.pageSize : 10 }
 
                                     const { length } = iQuery.rows;
 
@@ -502,11 +541,17 @@ const FKSelector = fnObserver(props => {
                             isAmbiguousMatch && modalFilter === NO_SEARCH_FILTER && shouldPreselectFilter ? "fk-selector-grid" : fkSelectorId
                         )
 
+                        query.defaultVars.config = {
+                            ... query.defaultVars.config,
+                            offset: 0,
+                            pageSize: query.defaultVars.config?.pageSize ?? 10
+                        };
+
                         query.execute(
                                     {
                                         config: {
                                             ... iQueryDoc ? iQueryDoc.queryConfig : query.defaultVars.config,
-                                            condition: composite
+                                            condition : queryCondition ? and(composite, queryCondition) : composite
                                         }
                                     }
                                 )
@@ -519,15 +564,19 @@ const FKSelector = fnObserver(props => {
                                     }
 
                                     //console.log("selectFromModal: UPDATE CONFIG", query.defaultVars.config)
-                                    query.defaultVars.config = { ... toJS(iQuery.queryConfig), offset: 0 }
 
                                     try
                                     {
                                         const { inputSchema } = config;
 
+                                        const rawVisibleColumns = visibleColumns ?? inputSchema.getTypeMeta(iQuery.type, "fkSelektorVisibleColumns");
+                                        const convertedVisibleColumns = typeof rawVisibleColumns === "string" ?
+                                                                            rawVisibleColumns.split(",") :
+                                                                            rawVisibleColumns;
+
                                         const columns = iQuery.columnStates
                                             .filter(
-                                                cs => cs.enabled && cs.name !== "id"
+                                                cs => cs.enabled && cs.name !== "id" && (convertedVisibleColumns?.includes(cs.name) ?? true)
                                             )
                                             .map(
                                                 cs => {
@@ -643,6 +692,9 @@ const FKSelector = fnObserver(props => {
                                 searchFilter={ searchFilter }
                                 searchTimeout={ searchTimeout }
                                 fkSelectorId={ fkSelectorId }
+                                selectButtonContentRenderer={ selectButtonContentRenderer }
+                                alignPagination={ alignPagination }
+                                paginationPageSizes={ paginationPageSizes }
                             />
                         </FormGroup>
                     );
@@ -668,6 +720,14 @@ FKSelector.propTypes = {
         PropTypes.instanceOf(GraphQLQuery),
         PropTypes.instanceOf(InteractiveQuery)
     ]).isRequired,
+
+    /**
+     * Optional FilterDSL condition to be applied to the execution of the FKSelector's query
+     */
+    queryCondition: PropTypes.oneOfType([
+        PropTypes.instanceOf(Condition),
+        PropTypes.func
+    ]),
 
     /**
      * Title for the modal dialog selecting the target object
@@ -778,7 +838,30 @@ FKSelector.propTypes = {
     /**
      * Optional extended local on-change handler ({oldValue, oldRow, row, fieldContext)}, value => ...)
      */
-    onChange: PropTypes.func
+    onChange: PropTypes.func,
+
+    /**
+     * Optional override for visible columns definition.
+     * 
+     * By default every column returned by the query is visible.
+     * The FKSelector then checks for a "fkSelektorVisibleColumns" definition in the type metadata to filter out unneeded columns.
+     * 
+     * This property overrides the type metadata value for a single FKSelector field.
+     */
+    visibleColumns: PropTypes.oneOfType([
+        PropTypes.string,
+        PropTypes.arrayOf(PropTypes.string)
+    ]),
+
+    /**
+     * set the pagination alignment of the datagrid in the modal ("left" [default], "center", "right")
+     */
+    alignPagination: PropTypes.string,
+
+    /**
+     * set the available page sizes for the datagrid pagination
+     */
+    paginationPageSizes: PropTypes.arrayOf(PropTypes.oneOfType([PropTypes.string, PropTypes.number]))
 };
 
 FKSelector.defaultProps = {

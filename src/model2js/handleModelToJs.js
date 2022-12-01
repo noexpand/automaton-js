@@ -204,18 +204,33 @@ export default query(
 
 export const renderStateScript = (state) => {
     let stateScript = ''
-    const {name, composite, transitionMap} = state
+    const {name, composite, transitionMap, filterFunctions} = state
 
     stateScript += `
-    const ${name} = new ViewState(`
+    const ${name} = new ViewState("${name}", (process, scope) => {
+    `
 
-    if (name) {
-        stateScript += ` "${name}", `
+    if(filterFunctions){
+        filterFunctions.forEach(filterFn => {
+            const {name: nameOfFilterFunctions, filterParams, mapName} = filterFn
+            if(mapName) {
+                const getterName = `get${mapName[0].toUpperCase()}${mapName.slice(1)}()`
+                stateScript += `const ${mapName} = ${getterName};
+                `;
+            }
+            filterParams.map((filterParam) => {
+                const {name, query, rootType, sourceName, modalTitle, valueFieldName} = filterParam
+                stateScript += `
+            ${nameOfFilterFunctions} (${name}, ${query}, ${rootType}, ${sourceName}, ${modalTitle}, ${valueFieldName});
+    `
+            })
+        });
     }
 
     if (transitionMap) {
         let transitionScript = ''
-        transitionScript += `(process, scope) => ({`
+        transitionScript += `return {
+        `
 
         for (let transitionName in transitionMap) {
             if (transitionMap.hasOwnProperty(transitionName)) {
@@ -253,7 +268,8 @@ export const renderStateScript = (state) => {
 
         }
         transitionScript += `
-    }),`
+        }
+    },`
         stateScript += `${jsBeautify(transitionScript)}`;
     }
 
@@ -346,6 +362,10 @@ export const renderStateScript = (state) => {
                                         compositeScript += `)`
                                     }
                                     compositeScript += `}`
+                                }
+                            
+                                if (value.root.attrPath) {
+                                    compositeScript += ` ${name} = {${paramsName}.${value.root.attrPath}} `
                                 }
 
                                 if (value.root.attrs) {
@@ -585,7 +605,7 @@ export const renderProcessExportScript = (processExports) => {
 
     //End the section of EXPORT AND STATES
     if (scope !== null) {
-        const {name, observables, actions, computeds, helpers} = scope
+        const {name, observables, actions, computeds, helpers, constructorFunction} = scope
         processScript += `
 export default class ${name} {
 `;
@@ -595,6 +615,16 @@ export default class ${name} {
         ${observable.name} = ${observable.defaultValue};
     `
         });
+
+        if (constructorFunction != null) {
+            const {params, code} = constructorFunction;
+            const param = params.length === 1 ? params : params.join(', ')
+            processScript += `
+        constructor(${param}) {
+            ${code}
+        }
+    `
+        }
 
         actions.map((action) => {
             const {name, params, code, noAnnotation} = action
@@ -616,7 +646,11 @@ export default class ${name} {
         if (helpers && helpers.length >= 1) {
 
             helpers.map((helper) => {
-                const {name, defaultValue, code, params} = helper
+                const {name, defaultValue, code, params, actionAnnotation} = helper
+                if (actionAnnotation) {
+                    processScript +=`
+                    @action`
+                }
                 if (params) {
                     params.length === 1 ? params : params.join(', ')
                 }
@@ -666,17 +700,28 @@ export default class ${name} {
 
 export const renderUserScopeScript = (userScope) => {
     let userScopeScript = ''
-    const {name, observables, actions, computeds, helpers} = userScope
+    const {name, observables, actions, computeds, helpers, constructorFunction} = userScope
 
     userScopeScript += `
 export class ${name}
- {`
+ {
+    `
 
     observables.forEach(observable => {
         const {name, defaultValue} = observable
         userScopeScript += `
     @observable ${name} = ${defaultValue};`
     })
+
+    if (constructorFunction != null) {
+        const {params, code} = constructorFunction;
+        const param = params.length === 1 ? params : params.join(', ')
+        userScopeScript += `
+    constructor(${param}) {
+        ${code}
+    }
+`
+    }
 
     userScopeScript += `
  }`
@@ -685,17 +730,28 @@ export class ${name}
 
 export const renderSessionScopeScript = (sessionScope) => {
     let sessionScopeScript = ''
-    const {name, observables, actions, computeds, helpers} = sessionScope
+    const {name, observables, actions, computeds, helpers, constructorFunction} = sessionScope
 
     sessionScopeScript += `
 export class ${name}
- {`
+ {
+    `
 
     observables.forEach(observable => {
         const {name, defaultValue} = observable
         sessionScopeScript += `
     @observable ${name} = ${defaultValue};`
     })
+
+    if (constructorFunction != null) {
+        const {params, code} = constructorFunction;
+        const param = params.length === 1 ? params : params.join(', ')
+        sessionScopeScript += `
+    constructor(${param}) {
+        ${code}
+    }
+`
+    }
 
     sessionScopeScript += `
  }`
@@ -704,9 +760,10 @@ export class ${name}
 
 export const renderDomainScript = (domain) => {
     let domainScript = '';
-    const {computeds, observables, name} = domain
+    const {computeds, observables, name, constructorFunction} = domain
     domainScript += `
-    export default class ${name} {`
+    export default class ${name} {
+    `
 
     if (observables && observables.length >= 1) {
         observables.forEach(observable => {
@@ -724,9 +781,21 @@ export const renderDomainScript = (domain) => {
         @computed get ${name}()
         {
             ${code}
-        }`
+        }
+        `
         })
     }
+
+    if (constructorFunction != null) {
+        const {params, code} = constructorFunction;
+        const param = params.length === 1 ? params : params.join(', ')
+        domainScript += `
+    constructor(${param}) {
+        ${code}
+    }
+`
+    }
+
     domainScript += `
     }`
     return jsBeautify(domainScript)

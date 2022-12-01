@@ -15,7 +15,6 @@ import getTreeSummary from "./getTreeSummary";
 import sleep from "../sleep";
 import { __setWireFormatForTest } from "../../../src/domain";
 
-
 const rawSchema = require("./tree-test-schema.json");
 const nodeIndex = require("./node-index");
 
@@ -41,6 +40,9 @@ describe("Tree.IndexedObjects", function () {
         inputSchema = new InputSchema(rawSchema);
 
         config.inputSchema = inputSchema;
+        
+        // XXX: tree cloning does not work as expected
+        config.skipIndexTreeCloning = true;
 
         format = new WireFormat(inputSchema, {
             InteractiveQueryFoo: InteractiveQuery,
@@ -76,7 +78,7 @@ describe("Tree.IndexedObjects", function () {
             const letter = matchCondition(
                 component(
                     "tree",
-                    field("name").greaterThan(
+                    field("name").startsWith(
                         matchPlaceholder("letter", "String")
                     )
                 ),
@@ -129,6 +131,13 @@ describe("Tree.IndexedObjects", function () {
                 </Tree>
             </FormConfigProvider>
         );
+
+        act(() => {
+            const folderA = getByText(container, "A:");
+            folderA.click();
+            const folderB = getByText(container, "B:");
+            folderB.click();
+        });
 
         const summary = getTreeSummary(container);
 
@@ -429,6 +438,55 @@ describe("Tree.IndexedObjects", function () {
                 });
 
                 return sleep(5);
+            })
+
+            .then(() => {
+                const summary = getTreeSummary(container);
+
+                //console.log(JSON.stringify(summary, null, 4));
+
+                assert.deepEqual(
+                    summary,
+                    // group "B:" opened again
+                    [
+                        " vA:",
+                        "    aardvark",
+                        "    antelope",
+                        " vB:",
+                        "    bass",
+                        "    bear",
+                        "    boar",
+                        "    buffalo",
+                        " vC:",
+                        "    calf",
+                        "    carp",
+                        "    catfish",
+                        "    cavy",
+                        "    cheetah",
+                        "    chicken",
+                        "    chub",
+                        "    clam",
+                        "    crab",
+                        "    crayfish",
+                        "    crow",
+                        " >D:",
+                        " vE:",
+                        "    elephant",
+                        "    Escherichia Coli",
+                        " vF:",
+                        "*   flamingo",
+                        "    flea",
+                        "    frog",
+                        "    fruitbat"
+                    ]
+                );
+            })
+
+            .then(() => {
+                act(() => {
+                    const dItems = getByText(container, "D:");
+                    dItems.click();
+                });
             })
 
             .then(() => {

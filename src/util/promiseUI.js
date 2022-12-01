@@ -1,7 +1,7 @@
 import React from "react";
 import { toast } from "react-toastify";
 import i18n from "../i18n";
-import { getGenericType } from "../index";
+import { getGenericType } from "../domain";
 import { toJS } from "mobx";
 
 
@@ -207,11 +207,17 @@ export default function promiseUI(promise, options)
             })
         },
         err => {
+            const clonedDefaultRejectOptions = {...defaultReject};
+            if (typeof defaultReject.render === "function")
+            {
+                clonedDefaultRejectOptions.render = defaultReject.render(err);
+            }
+
             toast.update(
                 toastId,
                 {
                     ... resetLoadingParams,
-                    ... defaultReject
+                    ... clonedDefaultRejectOptions
                 }
             )
             return Promise.reject(err);

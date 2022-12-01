@@ -1,4 +1,4 @@
-import { action, computed, makeObservable, observable, reaction, toJS } from "mobx"
+import { action, computed, makeObservable, observable, reaction, toJS, comparer } from "mobx"
 import { computedFn } from "mobx-utils"
 
 import config from "./config"
@@ -17,6 +17,7 @@ import { MergeOperation } from "./merge/MergeOperation"
 import { openDialog } from "./util/openDialog"
 import toJSEveryThing from "./util/toJSEveryThing"
 import { getCurrentProcess } from "./process/Process"
+import { isPropertyWritable } from "domainql-form"
 
 
 const LIST_OF_DOMAIN_OBJECTS_TYPE = "[DomainObject]";
@@ -247,16 +248,18 @@ function getChangesForNewObject(domainObject, mergePlan)
         {
             const {name, type} = fieldsOfGroup[j];
 
-            const currValue = domainObject[name];
+            if (isPropertyWritable(domainObject, name)) {
+                const currValue = domainObject[name];
+    
+                fieldChanges.push({
+                    field: name,
+                    value: {
+                        type,
+                        value: currValue
+                    }
+                });
 
-            fieldChanges.push({
-                field: name,
-                value: {
-                    type,
-                    value: currValue
-                }
-            });
-
+            }
         }
     }
 
@@ -264,19 +267,21 @@ function getChangesForNewObject(domainObject, mergePlan)
     {
         const {name, type} = scalarFields[i];
 
-        const currValue = domainObject[name];
+        if (isPropertyWritable(domainObject, name)) {
+            const currValue = domainObject[name];
 
-        // XXX: We ignore all undefined values so clearing a former existing value with undefined won't work.
-        //      Use null in that case
-        if (currValue !== undefined)
-        {
-            fieldChanges.push({
-                field: name,
-                value: {
-                    type,
-                    value: currValue
-                }
-            });
+            // XXX: We ignore all undefined values so clearing a former existing value with undefined won't work.
+            //      Use null in that case
+            if (currValue !== undefined)
+            {
+                fieldChanges.push({
+                    field: name,
+                    value: {
+                        type,
+                        value: currValue
+                    }
+                });
+            }
         }
     }
 
@@ -610,7 +615,10 @@ function checkUpdateEquality(registration, a,b)
         // we have to special case the artificial changes we produce for many-to-many changes
         else if (scalarType === LIST_OF_DOMAIN_OBJECTS_TYPE)
         {
-            return linkedObjectEquality(valueA, valueB)
+            // we have to check all linked objects in the updates set to see if there are changes
+            if (!linkedObjectEquality(valueA, valueB)) {
+                return false;
+            }
         }
         else if (!equalsScalar(scalarType, valueA, valueB))
         {
@@ -826,7 +834,7 @@ class EntityRegistration
         const { domainObject, status } = this;
         //console.log("_updateFieldChanges", this.key, toJS(domainObject))
 
-        if (status !== WorkingSetStatus.MODIFIED || !domainObject)
+        if ((status !== WorkingSetStatus.MODIFIED && status !== WorkingSetStatus.NEW) || !domainObject)
         {
             // no changes
             return [];
@@ -845,7 +853,7 @@ class EntityRegistration
 
     collectFieldUpdates(updates)
     {
-        const { changes, domainObject, base, workingSet, typeName } = this;
+        const { changes, domainObject, base, workingSet, typeName, status } = this;
         const { mergePlan } = workingSet[secret];
 
         const isNew = status === WorkingSetStatus.NEW;
@@ -901,6 +909,10 @@ class EntityRegistration
         {
             const {name, type} = scalarFields[i];
 
+            if(!isPropertyWritable(domainObject, name)) {
+                continue;
+            }
+
             const currValue = domainObject[name];
 
             // XXX: We ignore all undefined values so clearing a former existing value with undefined won't work.
@@ -918,7 +930,7 @@ class EntityRegistration
                 }
                 else
                 {
-                    const baseValue = base[name];
+                    const baseValue = base && base[name];
                     if (equalsScalar(type, baseValue, currValue))
                     {
                         if (changes.has(name))
@@ -964,11 +976,9 @@ class EntityRegistration
 
                 const otherRelation = leftSideRelation.targetType !== typeName ? leftSideRelation : rightSideRelation
 
-                //console.log("otherRelation", otherRelation)
+                const linkArrayBase = base && base[linkFieldName];
 
-                const linkArrayBase = base[linkFieldName];
-
-                if (linkArrayBase === undefined)
+                if (!linkArrayBase)
                 {
                     // if we have a undefined base array, we just keep ignoring that property
                     continue
@@ -2173,5 +2183,59 @@ export default class WorkingSet {
             }
         }
     }
+
+
+    /**
+     * A reactive reducer helper function. The given reducer function ( (domainObject,<T>) => <T> ) is applied to the
+     * combined set of domain objects from the given iQuery document and the working set.
+     *
+     * @param {InteractiveQuery} iQuery     iQuery document
+     * @param {function} fn                 reducer function
+     * @param {*} initial                   initial reducer value
+     *
+     * @return {*} reducer result
+     */
+    reducer = computedFn((iQuery, fn, initial) => {
+
+        const { registrations } = this[secret]
+        const { rows } = iQuery
+
+        let curr = initial;
+        for (let registration of registrations)
+        {
+            const { status, domainObject } = registration
+            if (status === WorkingSetStatus.NEW)
+            {
+                curr = fn(domainObject, curr)
+            }
+        }
+        for (let i = 0; i < rows.length; i++)
+        {
+            const row = rows[i]
+            const key = changeKey(row._type, row.id)
+            const registration = registrations.get(key)
+            if (registration)
+            {
+                const { status, domainObject } = registration
+                if (status === WorkingSetStatus.MODIFIED)
+                {
+                    curr = fn(domainObject, curr)
+                }
+                else if (status === WorkingSetStatus.DELETED)
+                {
+                    curr = fn(row, curr)
+                }
+            }
+            else
+            {
+                curr = fn(row, curr)
+            }
+        }
+        return curr;
+
+    }, {
+        name: "WorkingSet.reducer"
+    })
+
 }
 

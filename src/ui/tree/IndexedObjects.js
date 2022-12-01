@@ -1,4 +1,4 @@
-import React, { useContext, useMemo, useReducer, useState } from "react"
+import React, {useContext, useMemo, useReducer, useState} from "react"
 import PropTypes from "prop-types"
 import { observer as fnObserver } from "mobx-react-lite"
 import get from "lodash.get";
@@ -115,8 +115,6 @@ function reducer(state, action)
 
 function createInitialState(index, values, nameField)
 {
-    //console.log("createInitialState", { index, values, nameField });
-
     const state = {};
 
     for (let i = 0; i < index.length; i++)
@@ -127,7 +125,7 @@ function createInitialState(index, values, nameField)
             open: false
         };
     }
-
+    
     // injected or requested database rows, must be sorted by name field
     const { rows } = values;
     for (let i = 0; i < rows.length; i++)
@@ -155,18 +153,11 @@ function createInitialState(index, values, nameField)
             state[index[idx - 1]].loadState = LoadState.DONE;
         }
 
-        if (!state[letter].open)
-        {
-            state[letter].open = true;
-        }
-
         if (state[letter].loadState === LoadState.INITIAL)
         {
             state[letter].loadState = LoadState.FETCHED;
         }
     }
-
-    //console.log("INITIAL STATE", state);
 
     return state;
 }
@@ -227,11 +218,9 @@ const IndexedObjects = fnObserver(({
     const [dropDown, setDropDown] = useState(-1);
 
     const [state, dispatch] = useReducer(reducer, null, () => createInitialState(index, values, nameField));
+
     const loadMore = (letter, wasSelected) => {
-
-        const { queryConfig, rowCount, _query: query } = values;
-
-        //console.log("loadMore", toJS(queryConfig), "rowCount", rowCount);
+        const { queryConfig, _query: query } = values;
 
         const { count, insertPos } = findLetter(values.rows, nameField, letter);
 
@@ -242,7 +231,7 @@ const IndexedObjects = fnObserver(({
 
         const condition = updateComponentCondition(
             queryConfig.condition,
-            field(nameField).greaterThan(
+            field(nameField).startsWith(
                 value(
                     letter,
                     "String"
@@ -251,8 +240,6 @@ const IndexedObjects = fnObserver(({
             ctx.id,
             false
         );
-
-        //console.log("CONDITION", JSON.stringify(condition, null, 4));
 
         return query.execute({
                 config: {
@@ -309,7 +296,7 @@ const IndexedObjects = fnObserver(({
 
             //console.log("MORE", toJS(queryConfig), "rowCount", rowCount);
 
-            let insertPos = -1, prevLetter;
+            let insertPos = -1;
             let idx = findLetterIndex(index,letter);
 
             if (!idx)
@@ -324,7 +311,7 @@ const IndexedObjects = fnObserver(({
                 {
                     prevLetter = index[--idx];
 
-                } while ( idx > 0 || state[prevLetter].loadState === LoadState.INITIAL)
+                } while ( idx > 0 && state[prevLetter].loadState === LoadState.INITIAL)
 
 
                 if (idx < 0)
@@ -339,7 +326,7 @@ const IndexedObjects = fnObserver(({
 
             const condition = updateComponentCondition(
                 queryConfig.condition,
-                field(nameField).greaterThan(
+                field(nameField).startsWith(
                     value(
                         letter,
                         "String"
@@ -408,7 +395,7 @@ const IndexedObjects = fnObserver(({
                 //console.log("open", letter);
                 newState[letter] = {
                     ... newState[letter],
-                    open : true
+                    open : i === 0
                 };
 
                 if (newState[letter].loadState === LoadState.INITIAL)

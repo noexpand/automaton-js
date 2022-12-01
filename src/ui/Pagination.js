@@ -1,21 +1,35 @@
 import React from "react"
 import cx from "classnames"
-import { isObservable, toJS } from "mobx"
 import { observer as fnObserver } from "mobx-react-lite"
-import i18n from "../i18n";
+import I18nTranslation from "./I18nTranslation";
 
 
 export const DEFAULT_PAGE_SIZES = [
     5,
     10,
+    20,
     50,
-    i18n("All Rows")
+    "All Rows"
 ];
 
-const BUTTON_FIRST = i18n("Pagination:First");
-const BUTTON_PREV = i18n("Pagination:Prev");
-const BUTTON_NEXT = i18n("Pagination:Next");
-const BUTTON_LAST = i18n("Pagination:Last");
+const BUTTON_FIRST = <I18nTranslation value="Pagination:First" />;
+const BUTTON_PREV = <I18nTranslation value="Pagination:Prev" />;
+const BUTTON_NEXT = <I18nTranslation value="Pagination:Next" />;
+const BUTTON_LAST = <I18nTranslation value="Pagination:Last" />;
+
+function getJustifyContentClass(align) {
+    switch (align) {
+        case "right": {
+            return "justify-content-end"
+        }
+        case "center": {
+            return "justify-content-center"
+        }
+        default: {
+            return "justify-content-start"
+        }
+    }
+}
 
 function getTargetPage(btn, currentPage, numPages)
 {
@@ -101,9 +115,7 @@ const PageSizeSelect = props =>
         <label className="form-group input-group">
             <div className="input-group-prepend">
                 <span className="input-group-text">
-                    {
-                        i18n("Available Page Sizes")
-                    }
+                    <I18nTranslation value="Available Page Sizes" />
                 </span>
             </div>
             <select className="form-control page-size-select" value={pageSize} onChange={changePageSize}>
@@ -112,7 +124,21 @@ const PageSizeSelect = props =>
 
                         const pageSize = getPageSize(value);
 
-                        return (
+                        return typeof value === "string" ? (
+                            <I18nTranslation
+                                key={idx}
+                                value={value}
+                                renderer={(translation) => (
+                                    <option
+                                        value={pageSize}
+                                    >
+                                        {
+                                            translation
+                                        }
+                                    </option>
+                                )}
+                            />
+                        ) : (
                             <option
                                 key={idx}
                                 value={pageSize}
@@ -138,9 +164,7 @@ const RowCountDisplay = props =>
         <div className="ml-2 form-group input-group">
             <div className="input-group-prepend">
                 <span className="input-group-text">
-                    {
-                        i18n("Row Count")
-                    }
+                    <I18nTranslation value="Row Count" />
                 </span>
             </div>
             <div className="input-group-append">
@@ -159,9 +183,12 @@ const RowCountDisplay = props =>
  */
 const Pagination = fnObserver(props => {
 
-    const { iQuery, pageSizes, description, buttonConfig } = props;
+    const { iQuery, pageSizes, description, buttonConfig, align } = props;
 
-    const { queryConfig : { offset, pageSize }, rowCount } = iQuery;
+    const justifyContentClass = getJustifyContentClass(align);
+
+    const { queryConfig, rowCount } = iQuery;
+    const { offset = 0, pageSize = 5 } = queryConfig ?? {};
 
     if (typeof offset !== "number")
     {
@@ -173,9 +200,6 @@ const Pagination = fnObserver(props => {
     const navigate = ev => {
         ev.preventDefault();
         const offset = +ev.target.dataset.offset;
-
-        //console.log("Pagination.navigate", offset);
-
         return iQuery.update({
             offset
         });
@@ -193,7 +217,8 @@ const Pagination = fnObserver(props => {
     {
         return (
             <div
-                className="table-page-control"
+                aria-label={description}
+                className={cx("table-page-control", justifyContentClass)}
             >
                 <div
                     className="form-inline page-sizes"
@@ -214,9 +239,9 @@ const Pagination = fnObserver(props => {
     return (
         <div
             aria-label={description}
-            className="table-page-control"
+            className={cx("table-page-control", justifyContentClass)}
         >
-            <ul className="mr-2 pagination form-group input-group">
+            <ul className="mr-2 ml-2 pagination form-group input-group">
                 {
                     buttonConfig.map((btn, idx) => {
 
@@ -264,7 +289,7 @@ const Pagination = fnObserver(props => {
                     })
                 }
             </ul>
-            <div className="form-inline page-sizes">
+            <div className="mr-2 ml-2 form-inline page-sizes">
                 <PageSizeSelect
                     pageSize={ pageSize }
                     changePageSize={ changePageSize }

@@ -1,0 +1,24 @@
+{
+  "domain": {
+    "name": "Foo",
+    "observables": [
+      {
+        "name": "id",
+        "defaultValue": null,
+        "description": null
+      }
+    ],
+    "actions": [],
+    "computeds": [
+      {
+        "name": "code",
+        "code": "return this.name + \":\" + this.num + \":\" + this.type;"
+      }
+    ],
+    "constructorFunction": {
+      "params": [],
+      "code": "makeObservable(this);"
+    },
+    "helpers": []
+  }
+}

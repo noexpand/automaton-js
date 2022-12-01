@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useContext } from "react";
 import render from "../render";
 import { action, get, keys, set } from "mobx";
 
@@ -18,7 +18,7 @@ import ShortcutContext, { ShortcutContextState } from "../ui/shortcut/ShortcutCo
 import StickySizesContext from "../ui/sticky/StickySizesContext";
 import WorkingSet from "../WorkingSet"
 import { getGraphQLMethodType } from "../util/type-utils"
-
+import Throbber from "../ui/throbber/Throbber";
 
 let processImporter;
 
@@ -156,13 +156,15 @@ function renderCurrentView()
                     <Layout
                         env={ env }
                     >
-                            {
-                                ViewComponent && (
-                                    <ViewComponent
-                                        env={ env }
-                                    />
-                                )
-                            }
+                        {
+                            ViewComponent && (
+                                <ViewComponent
+                                    key={ `processId-${process.id}` }
+                                    env={ env }
+                                />
+                            )
+                        }
+                        <Throbber />
                     </Layout>
                 </ShortcutContext.Provider>
                 {
@@ -387,6 +389,30 @@ function resetHistoryTo(historyIndex)
     config.history.go(delta);
 }
 
+export function findProcessScopeWithWorkingSet(process)
+{
+    let { scope } = process
+    
+    if (scope != null) {
+        let current = process
+        do
+        {
+            if (scope.workingSet instanceof WorkingSet)
+            {
+                return scope
+            }
+            else if (typeof scope.isDirty === "function")
+            {
+                return scope
+            }
+            current = current[secret].parent
+    
+        } while (current)
+    }
+
+    return null
+}
+
 
 /**
  * Process facade exposing a limited set of getters and methods as process API
@@ -544,29 +570,24 @@ export class Process {
      */
     get isDirty()
     {
-        let { scope } = this
-        let process = this
-        do
+        const scope = findProcessScopeWithWorkingSet(this)
+        if (scope)
         {
-            if (scope.workingSet instanceof WorkingSet)
+            if (scope.workingSet)
             {
-                if (scope.workingSet.hasChanges)
-                {
+                if(scope.workingSet.hasChanges) {
                     return true
                 }
             }
             else if (typeof scope.isDirty === "function")
             {
-                if (scope.isDirty())
-                {
-                    return true
-                }
+                return scope.isDirty()
             }
-
-            process = process[secret].parent
-
-        } while (process)
-
+            else
+            {
+                throw new Error("Returned scope has neither workingSet nor isDirty function")
+            }
+        }
         return false
     }
 

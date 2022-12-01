@@ -1,8 +1,8 @@
-import React, { useState } from "react"
+import React, { useMemo, useState } from "react"
 import PropTypes from "prop-types"
 import { ButtonToolbar, ListGroup, ListGroupItem } from "reactstrap"
 import { FieldMode, FormGroup, useFormConfig, Icon } from "domainql-form"
-import { action, observable } from "mobx";
+import { action } from "mobx";
 import { observer as fnObserver, useLocalObservable } from "mobx-react-lite";
 import toPath from "lodash.topath"
 import get from "lodash.get"
@@ -17,8 +17,83 @@ import { getGenericType, INTERACTIVE_QUERY } from "../domain";
 
 import AssociationSelectorModal from "./AssociationSelectorModal";
 import autoSubmitHack from "../util/autoSubmitHack";
-import { field, values } from "../FilterDSL";
-import { lookupType } from "../util/type-utils";
+import { and, Condition, field, value, values } from "../FilterDSL";
+import { getGraphQLMethodType, lookupType, unwrapAll, unwrapNonNull } from "../util/type-utils";
+
+
+function getQueryCondition(defaultQueryCondition, queryCondition) {
+    if (defaultQueryCondition && queryCondition) {
+        return and(defaultQueryCondition, queryCondition);
+    }
+    if (defaultQueryCondition) {
+        return defaultQueryCondition;
+    }
+    if (queryCondition) {
+        return queryCondition;
+    }
+    return null;
+}
+
+export const NO_SEARCH_FILTER = "NO_SEARCH_FILTER";
+/**
+ * Filter Mode: Do not offer a column filter by default.
+ */
+export const NO_FILTER = "NO_FILTER";
+/**
+ * Filter Mode: Offer a column filter even if a search filter is defined (with the searchFilter prop).
+ */
+export const COLUMN_FILTER = "COLUMN_FILTER";
+
+/**
+ * Creates a filter condition for the given type, searchFilter prop and search term
+ *
+ * @param {String} type                     GraphQL base type
+ * @param {function|String}searchFilter    searchFilter prop
+ * @param {String} searchTerm               current search value
+ * @return {object} condition graph or null
+ */
+export function createSearchFilter(type, searchFilter, searchTerm)
+{
+    if (!searchFilter)
+    {
+        return null;
+    }
+
+    let condition;
+    if (typeof searchFilter === "function")
+    {
+        condition = searchFilter(searchTerm)
+    }
+    else
+    {
+        const scalarType = unwrapNonNull(lookupType(type, "rows." + searchFilter)).name;
+
+        if (scalarType === "String")
+        {
+            condition = field(searchFilter)
+                .containsIgnoreCase(
+                    value(
+                        searchTerm,
+                        scalarType
+                    )
+                );
+        }
+        else
+        {
+            condition = field(searchFilter)
+                .toString()
+                .containsIgnoreCase(
+                    value(
+                        searchTerm,
+                        scalarType
+                    )
+                );
+
+        }
+    }
+
+    return condition;
+}
 
 
 function toggleOpen(modalState)
@@ -245,12 +320,52 @@ const updateSelected = action("AssociationSelector.updateSelected", (selected, l
     selected.replace(newSelected);
 })
 
+
+let associationSelectorCounter = 0
+
 /**
  * Displays the currently associated entities of a many-to-many relationship as seen from one of the associated sides.
  */
 const AssociationSelector = fnObserver(props => {
 
-    const { name, value, display, mode: modeFromProps, label, query, modalTitle, fade, helpText, labelClass, formGroupClass, generateId, onNew } = props;
+    const [associationSelectorId] = useState("associationSelector-"+ associationSelectorCounter++)
+
+    const {
+        name,
+        value,
+        display,
+        mode: modeFromProps,
+        label,
+        query,
+        queryCondition: queryConditionFromProps,
+        modalTitle,
+        fade,
+        helpText,
+        labelClass,
+        formGroupClass,
+        generateId,
+        onNew,
+        visibleColumns,
+        alignPagination,
+        paginationPageSizes,
+        searchFilter,
+        modalFilter,
+        disabled
+    } = props;
+
+    const queryDef = query.getQueryDefinition();
+    const iQueryType = useMemo(
+        () => {
+            if (queryDef != null) {
+                const aliases = queryDef.aliases;
+                const queryName = queryDef.methodCalls[0];
+                const gqlMethodName = aliases ? aliases[queryName] || queryName : queryName;
+                return getGraphQLMethodType(gqlMethodName).name
+            }
+            return null;
+        },
+        [ queryDef ]
+    );
 
     const [elementId] = useState("assoc-selector-" + (++associationSelectorCount));
 
@@ -262,9 +377,23 @@ const AssociationSelector = fnObserver(props => {
 
     const selected = useLocalObservable(() => new Set());
 
+    const queryCondition = typeof queryConditionFromProps === "function" ?
+        queryConditionFromProps() :
+        queryConditionFromProps;
+
+    const defaultQueryCondition = query.defaultVars.config?.condition;
+
+    const executeQueryCondition = getQueryCondition(defaultQueryCondition, queryCondition);
+
     const openModal = () => {
         query.execute(
-            query.defaultVars
+            {
+                ...query.defaultVars,
+                config: {
+                    ...query.defaultVars.config,
+                    condition : executeQueryCondition
+                }
+            }
         ).then(
             result => {
                 try
@@ -275,12 +404,23 @@ const AssociationSelector = fnObserver(props => {
                         throw new Error("Result is no interactive query object");
                     }
 
+                    const { inputSchema } = config;
+                
+                    const rawVisibleColumns = visibleColumns ?? inputSchema.getTypeMeta(iQuery.type, "associationSelectorVisibleColumns");
+                    const convertedVisibleColumns = typeof rawVisibleColumns === "string" ?
+                                                        rawVisibleColumns.split(",") :
+                                                        rawVisibleColumns;
+
                     const columns = iQuery.columnStates
                         .filter(
                             cs => cs.enabled && cs.name !== "id" && cs.name !== config.mergeOptions.versionField
+                                    && (convertedVisibleColumns?.includes(cs.name) ?? true)
                         )
                         .map(
-                            cs => cs.name
+                            cs => {
+                                const heading = inputSchema.getFieldMeta(iQuery.type, cs.name, "heading");
+                                return { name: cs.name, heading }
+                            }
                         );
 
 
@@ -289,10 +429,13 @@ const AssociationSelector = fnObserver(props => {
                     updateSelected(selected, links, valuePath);
 
                     const selectedBefore = new Set(selected);
+                    
+                    const columnTypes = columns.map(({name}) => unwrapAll(lookupType(iQuery.type, name)).name)
 
                     setModalState({
                         iQuery,
                         columns,
+                        columnTypes,
                         isOpen: true,
                         valuePath,
                         selectedBefore,
@@ -328,6 +471,7 @@ const AssociationSelector = fnObserver(props => {
     }
 
     const effectiveMode = modeFromProps || formConfig.options.mode;
+    const isDisabled = typeof disabled === "function" ? disabled() : disabled;
 
     return (
         <React.Fragment>
@@ -349,8 +493,6 @@ const AssociationSelector = fnObserver(props => {
                     {
                         links.map((link,idx) => {
 
-                            //console.log({link: toJS(link), display});
-
                             return (
                                 <ListGroupItem
                                     key={idx}
@@ -368,6 +510,7 @@ const AssociationSelector = fnObserver(props => {
                                         onClick={
                                             () => removeLink(formConfig.root, selected, link, name, value)
                                         }
+                                        disabled={isDisabled}
                                     >
                                         <Icon className="fa-times"/>
                                     </button>
@@ -381,6 +524,8 @@ const AssociationSelector = fnObserver(props => {
                         type="Button"
                         className="btn btn-light"
                         onClick={ openModal }
+                        disabled={isDisabled}
+                        name={ name }
                     >
                         <Icon className="fa-clipboard-check mr-1"/>
                         Select
@@ -389,10 +534,16 @@ const AssociationSelector = fnObserver(props => {
             </FormGroup>
             <AssociationSelectorModal
                 { ... modalState }
+                iQueryType={ iQueryType }
                 selected={ selected }
                 title={modalTitle}
                 toggle={toggle}
                 fade={fade}
+                modalFilter={ modalFilter }
+                searchFilter={ searchFilter }
+                alignPagination={ alignPagination }
+                paginationPageSizes={ paginationPageSizes }
+                associationSelectorId={ associationSelectorId }
             />
         </React.Fragment>
     )
@@ -417,6 +568,14 @@ AssociationSelector.propTypes = {
      * iQuery GraphQL query to fetch the current list of target objects
      */
     query: PropTypes.instanceOf(GraphQLQuery).isRequired,
+
+    /**
+     * Optional FilterDSL condition to be applied to the execution of the AssociationSelector's query
+     */
+    queryCondition: PropTypes.oneOfType([
+        PropTypes.instanceOf(Condition),
+        PropTypes.func
+    ]),
 
     /**
      * Title for the modal dialog selecting the target object
@@ -473,7 +632,50 @@ AssociationSelector.propTypes = {
      * properties on that new link. ( link => ... )
      *
      */
-    onNew: PropTypes.func
+    onNew: PropTypes.func,
+
+    
+    /**
+     * Disables the AssociationSelector.
+     * Can be defined as callback function.
+     */
+     disabled: PropTypes.oneOfType([
+        PropTypes.bool,
+        PropTypes.func
+    ]),
+
+    /**
+     * Field name or function returning a filter expression used to allow and
+     * validate text-input changes of the selected value.
+     *
+     * The field or filter must match exactly one element from the current `query`.
+     *
+     * (Function must be of the form `value => ...` and must return a Filter DSL condition.)
+     *
+     */
+    searchFilter: PropTypes.oneOfType([
+        PropTypes.string,
+        PropTypes.func
+    ]),
+    
+    /**
+     * set the pagination alignment of the datagrid in the modal ("left" [default], "center", "right")
+     */
+     alignPagination: PropTypes.string,
+
+    /**
+     * set the available page sizes for the datagrid pagination
+     */
+    paginationPageSizes: PropTypes.arrayOf(PropTypes.oneOfType([PropTypes.string, PropTypes.number])),
+
+    /**
+     * Filter mode for the selector modal. Controls display of column and repeated search filter in interaction with the searchFilter prop,
+     */
+    modalFilter: PropTypes.oneOf([
+        NO_SEARCH_FILTER,
+        NO_FILTER,
+        COLUMN_FILTER
+    ]),
 
 };
 

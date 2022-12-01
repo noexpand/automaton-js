@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useReducer, useRef } from "react"
+import React, {useEffect, useMemo, useReducer, useRef, useState} from "react"
 import PropTypes from "prop-types"
 import { Manager } from "react-popper";
 import { action } from "mobx";
@@ -7,6 +7,9 @@ import get from "lodash.get";
 import IndexedObjects from "./IndexedObjects";
 import Folder from "./Folder";
 import MetaItem from "./MetaItem";
+import ObjectItem from "./ObjectItem";
+import TreeItem from "./TreeItem";
+import TreeNode from "./TreeNode";
 
 
 export const TreeContext = React.createContext({
@@ -32,8 +35,6 @@ function findTreeItems(root)
 export const appendRows = action(
     "Tree.appendRows",
     (values, newValues, nameField = "name", pos = -1) => {
-
-        //console.log({values, newValues, nameField, pos})
 
         values.queryConfig = newValues.queryConfig;
 
@@ -64,8 +65,6 @@ export const appendRows = action(
 
                     if (name === newName)
                     {
-                        // console.log("Name ", name, " already present in list at ", j);
-
                         // update row with fresher values
                         existingRow[j] = newRow;
                         found = true;
@@ -140,10 +139,7 @@ function reducer(state,action)
             }
             break;
         }
-
     }
-
-    //console.log("Tree reducer", state, action, "\n  =>", newState);
 
     return newState;
 }
@@ -189,12 +185,23 @@ const DEFAULT_OPTIONS = {
 /**
  * Root tree component.
  */
-const Tree = ({id = "tree", "aria-labelledby" : labelledBy, options, children}) => {
+const Tree = (props) => {
+
+    const {
+        id = "tree",
+        "aria-labelledby" : labelledBy,
+        options,
+        selectedElements,
+        onSelectedElementsChange,
+        children
+    } = props;
 
     const treeRef = useRef(null);
 
     /** Tree state */
     const [state, dispatch] = useReducer(reducer, DEFAULT_STATE);
+
+    const [selectionList, setSelectionList] = useState(selectedElements);
 
     /** Memoized Tree ctx */
     const ctx = useMemo(
@@ -202,6 +209,7 @@ const Tree = ({id = "tree", "aria-labelledby" : labelledBy, options, children}) 
             ({
                 id,
                 ...state,
+                selectionList,
 
                 menuElem: document.querySelector(`li[data-sel='${state.menu}'] .default`),
 
@@ -231,12 +239,43 @@ const Tree = ({id = "tree", "aria-labelledby" : labelledBy, options, children}) 
                     );
                 },
 
+                checkItem: (selectionId, singleSelect = false) => {
+                    if (!selectionList.includes(selectionId)) {
+                        if (singleSelect) {
+                            const newSelectionList = [selectionId];
+                            
+                            setSelectionList(newSelectionList);
+                            onSelectedElementsChange(newSelectionList);
+                        } else {
+                            const newSelectionList = [
+                                ... selectionList,
+                                selectionId
+                            ];
+    
+                            setSelectionList(newSelectionList);
+                            onSelectedElementsChange(newSelectionList);
+                        }
+                    }
+                },
+
+                uncheckItem: (selectionId, singleSelect = false) => {
+                    if (!singleSelect && selectionList.includes(selectionId)) {
+                        const index = selectionList.indexOf(selectionId);
+                        const newSelectionList = [
+                            ... selectionList.slice(0, index),
+                            ... selectionList.slice(index + 1)
+                        ];
+
+                        setSelectionList(newSelectionList);
+                        onSelectedElementsChange(newSelectionList);
+                    }
+                },
+
                 reselectHidden: (container, selectionId) => {
 
                     const current = container.querySelector(`[data-sel='${state.selected}']`);
                     if (current && current.dataset.sel !== selectionId)
                     {
-                        //console.log("reselectHidden", selectionId);
                         dispatch({type: SELECT, selectionId})
                     }
                 },
@@ -262,14 +301,13 @@ const Tree = ({id = "tree", "aria-labelledby" : labelledBy, options, children}) 
                     if (firstItem)
                     {
                         const firstId = firstItem.dataset.sel;
-                        //console.log(`Select first id '${firstId}'`);
                         ctx.select(firstId);
                     }
                 }
 
 
             }),
-        [ id, state ]
+        [ id, state, selectionList ]
     );
 
     useEffect(
@@ -281,6 +319,10 @@ const Tree = ({id = "tree", "aria-labelledby" : labelledBy, options, children}) 
         },
         []
     );
+
+    useEffect(() => {
+        setSelectionList(selectedElements ?? []);
+    }, [selectedElements]);
 
 
     const onKeyDown = ev => {
@@ -300,7 +342,6 @@ const Tree = ({id = "tree", "aria-labelledby" : labelledBy, options, children}) 
             return;
         }
 
-        //console.log("Tree.onKeyDown", { target, keyCode});
 
         switch(keyCode)
         {
@@ -347,6 +388,7 @@ const Tree = ({id = "tree", "aria-labelledby" : labelledBy, options, children}) 
                         parentItem.focus();
                     }
                 }
+                ev.preventDefault();
                 break;
             }
             case 39: // cursor right
@@ -364,13 +406,13 @@ const Tree = ({id = "tree", "aria-labelledby" : labelledBy, options, children}) 
                         firstChild.focus();
                     }
                 }
+                ev.preventDefault();
                 break;
             }
 
             default:
             {
                 const n = MOVEMENT_KEYS[keyCode];
-                //console.log("movement[", keyCode, "] = ", n);
                 if (n !== undefined)
                 {
                     ev.preventDefault();
@@ -400,11 +442,6 @@ const Tree = ({id = "tree", "aria-labelledby" : labelledBy, options, children}) 
                             ctx.select(item.dataset.sel);
                         }
                     }
-                    //console.log("down", {items});
-                }
-                else
-                {
-                    //console.log({keyCode})
                 }
             }
         }
@@ -451,7 +488,17 @@ Tree.propTypes = {
          * True if the tree should render small button variants.
          */
         small: PropTypes.bool
-    })
+    }),
+
+    /**
+     * list of selected elements
+     */
+    selectedElements: PropTypes.arrayOf(PropTypes.string),
+
+    /**
+     * callback function called on selected element changes
+     */
+    onSelectedElementsChange: PropTypes.func
 };
 
 Tree.displayName = "Tree";
@@ -461,5 +508,8 @@ Tree.Objects = Objects;
 Tree.Folder = Folder;
 Tree.IndexedObjects = IndexedObjects;
 Tree.MetaItem = MetaItem;
+Tree.ObjectItem = ObjectItem;
+Tree.TreeItem = TreeItem;
+Tree.TreeNode = TreeNode;
 
 export default Tree;

@@ -26,9 +26,9 @@ import compareConditions from "../../util/compareConditions";
  */
 
 
-function extractValueNodes(node, valueNodes = [])
+export function extractValueNodes(node, valueNodes = [])
 {
-    if (node === null)
+    if (node == null)
     {
         return valueNodes;
     }
@@ -67,13 +67,9 @@ function extractValueNodes(node, valueNodes = [])
  */
 function createValues(filter, column, columnCondition)
 {
-    //console.log("createValues", {name, column, columnCondition});
-
     const valueNodes = extractValueNodes(columnCondition);
 
     const numNodes = valueNodes.length;
-
-    //console.log("VALUE NODES", toJS(columnCondition), JSON.stringify(valueNodes, null, 4));
 
     const numValues = getConditionArgCount(filter);
     const list = new Array(numValues);
@@ -83,12 +79,10 @@ function createValues(filter, column, columnCondition)
 
         list[i] = {
             type: valueNode ? valueNode.scalarType : column.type,
-            label: i === 0 ? i18n("Filter:" + name) : null,
+            label: i === 0 ? i18n("Filter:" + column.name) : null,
             value: valueNode ? valueNode.value : null
         };
     }
-
-    //console.log("VALUES = " , list);
 
     return list;
 }
@@ -211,22 +205,22 @@ function findColumnCondition(componentId = null, name, currentCondition)
         }
 
     }
+    
     return null;
-
 }
 
 
-export function invokeForTemplate(filter)
+export function invokeForTemplate(fieldName, filter)
 {
     const { length } = filter;
 
-    const args = new Array(length);
-    for(let i = 0; i < length; i++)
+    const args = new Array(length - 1);
+    for(let i = 0; i < length - 1; i++)
     {
         args[i] = null;
     }
 
-    return  filter.apply(null, args);
+    return  filter.call(null, fieldName, ...args);
 }
 
 
@@ -271,6 +265,7 @@ function findConditionByTemplate(componentId = null, template, currentCondition)
             return cond;
         }
     }
+
     return null;
 }
 
@@ -282,12 +277,12 @@ function resolveFilters(columns, componentId, currentCondition)
     for (let i = 0; i < columns.length; i++)
     {
         const column = columns[i];
-        const { filter } = column;
+        const { name, filter, filterIndex, getValue } = column;
         if (filter)
         {
             if (typeof filter === "function")
             {
-                const template = invokeForTemplate(filter);
+                const template = invokeForTemplate(name, filter);
 
                 const columnCondition = findConditionByTemplate(
                     componentId,
@@ -295,18 +290,22 @@ function resolveFilters(columns, componentId, currentCondition)
                     currentCondition
                 );
 
-                const values = createValues(
-                    filter,
-                    column,
-                    columnCondition || template
-                );
-                filters.push(
-                    {
+                const values = typeof getValue === "function" ?
+                    getValue(
+                        column,
+                        columnCondition || template
+                    ) :
+                    createValues(
                         filter,
-                        values,
-                        columnIndex: i
-                    }
-                )
+                        column,
+                        columnCondition || template
+                    );
+
+                filters[filterIndex] = {
+                    filter,
+                    values,
+                    columnIndex: i
+                };
 
             }
             else
@@ -323,20 +322,16 @@ function resolveFilters(columns, componentId, currentCondition)
                     columnCondition
                 );
                 
-                filters.push(
-                    {
-                        filter,
-                        values,
-                        columnIndex: i
-                    }
-                )
+                filters[filterIndex] = {
+                    filter,
+                    values,
+                    columnIndex: i
+                };
             }
 
 
         }
     }
-
-    //console.log("resolveFilters", filters);
 
     return filters;
 }
@@ -352,8 +347,6 @@ const GridStateForm = props => {
 
     const { iQuery, columns, componentId, filterTimeout, children } = props;
 
-    //console.log("Render FilterRow", { iQuery, columns });
-
     const filterState = useMemo(
         () =>
             observable({
@@ -366,46 +359,43 @@ const GridStateForm = props => {
         [columns, componentId]
     );
 
-
-
     //
     // Run debounced update for iQuery, syncing it to filter state
     //
     useEffect(
         () => reaction(
             () => {
-
-                //console.log("UPDATE FILTER EXPRESSION");
-
                 const { filters } = filterState;
                 const { length } = filters;
 
                 const conditions = [];
                 for (let i = 0; i < length; i++)
                 {
+                    if (filters[i] == null) {
+                        continue;
+                    }
                     const { filter, values, columnIndex } = filters[i];
-
-                    //console.log("FILTER", { name, type, values, columnIndex })
 
                     if (allValuesSet(values))
                     {
                         let cond;
+                        const fieldName = columns[columnIndex].name;
                         if (typeof filter === "function")
                         {
-                            cond = filter(... values.map(v => v.value))
+                            cond = filter(fieldName, ... values.map(v => v.value))
                         }
                         else
                         {
                             cond = condition(filter);
                             cond.operands = [
-                                field(
-                                    columns[columnIndex].name
-                                ),
+                                field(fieldName),
                                 ... values.map( v => value(toJS(v.value), v.type))
                             ];
 
                         }
-                        conditions.push(cond);
+                        if (cond != null) {
+                            conditions.push(cond);
+                        }
                     }
                 }
 
@@ -417,15 +407,9 @@ const GridStateForm = props => {
                 const cond = condition("and");
                 cond.operands = conditions;
 
-                //console.log("RUN EXPRESSION", JSON.stringify(cond, null, 4));
-
                 return cond;
-
             },
             cond => {
-
-                //console.log("UPDATE FILTER EFFECT");
-
                 return iQuery.updateCondition(
                     cond,
                     componentId,
@@ -453,15 +437,10 @@ const GridStateForm = props => {
                     componentId,
                     iQuery.queryConfig.condition
                 );
-
-                //console.log("SYNC FILTER EXPRESSION", filters);
-
+                
                 return filters;
             },
             filters => {
-
-                //console.log("SYNC FILTER EFFECT", filters);
-
                 filterState.filters.replace(filters);
             }
             ,{

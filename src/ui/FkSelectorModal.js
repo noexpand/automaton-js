@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react"
+import React, { useEffect, useMemo, useRef } from "react"
 import cx from "classnames";
 import i18n from "../i18n";
 
@@ -26,15 +26,33 @@ const setFilter = action(
 const FkSelectorModal = fnObserver(
     props => {
 
-        const { isOpen, iQuery, iQueryType, columns, columnTypes, title, fieldType, selectRow, toggle, fade, filter = null, modalFilter, searchFilter, searchTimeout, fkSelectorId } = props;
+        const {
+            isOpen,
+            iQuery,
+            iQueryType,
+            columns,
+            columnTypes,
+            title,
+            fieldType,
+            selectRow,
+            toggle,
+            fade,
+            filter = null,
+            modalFilter,
+            searchFilter,
+            searchTimeout,
+            fkSelectorId,
+            selectButtonContentRenderer,
+            alignPagination,
+            paginationPageSizes
+        } = props;
 
         const formObject = useLocalObservable(() => observable({filter}));
 
-        const iQueryRef = useRef(null);
         const searchFieldRef = useRef(null);
 
 
-        useEffect(
+        useMemo(
             () => {
 
                 // reinitialize filter on opening
@@ -43,9 +61,8 @@ const FkSelectorModal = fnObserver(
                     setFilter(formObject, filter);
                 }
 
-                // update iQuery ref
-                iQueryRef.current = iQuery;
-            }
+            },
+            [iQuery]
         )
 
         const haveSearchFilter = !!searchFilter;
@@ -58,46 +75,59 @@ const FkSelectorModal = fnObserver(
 
         useEffect(
             () => {
-                return reaction(
-                    // the expression creates a new filter expression from the current observable state
-                    () => {
+                if (iQuery != null) {
+                    return reaction(
+                        // the expression creates a new filter expression from the current observable state
+                        () => {
 
-                        const { filter } = formObject;
-                        if (filter && showSearchFilter)
+                            const { filter } = formObject;
+                            if (filter && showSearchFilter)
+                            {
+                                return createSearchFilter(iQueryType, searchFilter, formObject.filter);
+                            }
+                            else
+                            {
+                                return null;
+                            }
+
+                        },
+                        // and the effect triggers the debounced condition update
+                        newCondition => {
+
+                            const cachedVars = iQuery._query.vars;
+    
+                            const composite = updateComponentCondition(
+                                iQuery._query.vars.config.condition,
+                                newCondition,
+                                fkSelectorId
+                            )
+    
+                            iQuery.updateCondition(
+                                composite
+                            ).then(() => {
+                                if (cachedVars != null) {
+                                    iQuery._query.vars = cachedVars;
+                                }
+                            });
+                        },
                         {
-                            return createSearchFilter(iQueryType, searchFilter, formObject.filter);
+                            delay: searchTimeout,
+                            equals: comparer.structural
                         }
-                        else
-                        {
-                            return null;
-                        }
-
-                    },
-                    // and the effect triggers the debounced condition update
-                    newCondition => {
-
-                        const composite = updateComponentCondition(
-                            iQueryRef.current._query.defaultVars.config.condition,
-                            newCondition,
-                            fkSelectorId
-                        )
-
-                        // We can't use `iQuery` directly because this closure traps the very first iQuery prop value
-                        // which is always null. So we trap the iQueryRef ref instead and change its current prop
-                        iQueryRef.current.updateCondition(
-                            composite
-                        );
-                    },
-                    {
-                        delay: searchTimeout,
-                        equals: comparer.structural
-                    }
-                );
+                    );
+                }
             },
-            []
+            [iQuery]
         );
 
-        //console.log("FkSelectorModal", toJS(iQuery))
+        const selectButtonContent =
+            typeof selectButtonContentRenderer === "function" ?
+                selectButtonContentRenderer() :
+                i18n("Select");
+        const selectButtonTitle  =
+            typeof selectButtonContentRenderer === "function" ?
+                i18n("Select") : 
+                "";
 
         return(
             <Modal isOpen={ isOpen } toggle={ toggle } size="lg" fade={ fade }>
@@ -171,6 +201,8 @@ const FkSelectorModal = fnObserver(
                                     }
                                     value={ iQuery }
                                     filterTimeout={ searchTimeout }
+                                    alignPagination={ alignPagination }
+                                    paginationPageSizes={paginationPageSizes}
                                     isCompact
                                 >
                                     <DataGrid.Column
@@ -180,11 +212,12 @@ const FkSelectorModal = fnObserver(
                                             row => (
                                                 <button
                                                     type="button"
-                                                    className="btn btn-secondary"
+                                                    className="btn btn-outline-primary"
                                                     onClick={ ev => selectRow(row) }
+                                                    title={ selectButtonTitle }
                                                 >
                                                     {
-                                                        i18n("Select")
+                                                        selectButtonContent
                                                     }
                                                 </button>
                                             )
@@ -201,7 +234,7 @@ const FkSelectorModal = fnObserver(
                                                         showColumnFilter ? (
                                                             columnTypes[idx] === "String" ?
                                                                 "containsIgnoreCase" :
-                                                                val =>
+                                                                (fieldName, val) =>
                                                                     field(name).toString()
                                                                     .containsIgnoreCase(
                                                                         value(val, "String")
@@ -221,7 +254,7 @@ const FkSelectorModal = fnObserver(
                                 !isNonNull(fieldType) && (
                                     <button
                                         type="button"
-                                        className="btn btn-secondary"
+                                        className="btn btn-outline-primary"
                                         onClick={ ev => selectRow(null) }
                                     >
                                         {
